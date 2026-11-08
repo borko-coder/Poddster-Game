@@ -1,102 +1,94 @@
 'use strict';
 
 /* =========================================================================
- * Podcast Tycoon — build a podcast empire on a city grid.
- * One tick = one in-game day. All tuning numbers live in CONFIG / BUILDINGS.
+ * Podcast Studio Tycoon
+ * Start with one small garage studio, rent rooms to podcasters, grow your
+ * reputation, and open studios in bigger cities until you own an empire.
+ * One tick = one in-game day. Balance numbers live in the tables below.
  * ========================================================================= */
 
 const CONFIG = {
   cols: 6,
-  rows: 8,
-  startCash: 2500,
-  baseCapacity: 1000,        // listeners you can host before buying servers
-  baseGrowthPerStudio: 15,   // new listeners/day from a level-1 studio
-  churn: 0.01,               // fraction of listeners lost each day
-  revenuePerListener: 0.02,  // $ per listener per day before ad bonuses
-  trendMultiplier: 2,
-  trendEveryDays: 30,
-  rebrandCost: 150,
-  demolishRefund: 0.5,
+  rows: 7,
+  startCash: 1000,
   maxLevel: 3,
   bankruptAt: -1000,
-  saveKey: 'podcast-tycoon-save-v1',
+  // Daily reputation: +repGain × √(sessions × happiness) ÷ stars^repHardness
+  //                   −repLoss × √(clients turned away)
+  // Square roots and the star divisor make every star harder to earn than the last.
+  repGain: 0.5,
+  repHardness: 2.3,
+  repLoss: 0.6,
+  repPerStar: 125,          // 1★ at 0 rep, 5★ at 500 rep
+  maxRep: 500,
+  expandBase: 150,          // cost of the first extra floor tile (× city price)
+  expandGrowth: 1.15,       // each further tile at the same studio costs 15% more
+  demolishRefund: 0.5,
+  saveKey: 'podcast-studio-tycoon-v1',
 };
 
-const GENRES = [
-  { id: 'crime', name: 'True Crime', icon: '🕵️' },
-  { id: 'comedy', name: 'Comedy', icon: '😂' },
-  { id: 'tech', name: 'Tech', icon: '💻' },
-  { id: 'sports', name: 'Sports', icon: '⚽' },
-  { id: 'wellness', name: 'Wellness', icon: '🧘' },
-  { id: 'history', name: 'History', icon: '📜' },
-];
-const genreById = (id) => GENRES.find((g) => g.id === id);
-
-const BUILDINGS = {
-  studio: {
-    name: 'Studio', icon: '🎙️', cost: 500, upkeep: 6, staff: 2,
-    desc: 'Records shows that attract listeners. Nearby Editing Suites, Cafés and Parks boost quality. Shows in the trending genre grow 2× faster.',
+const ROOMS = {
+  booth: {
+    name: 'Audio Booth', short: 'Booth', icon: '🎙️', cost: 500, upkeep: 10, sessions: 3, price: 25,
+    desc: 'A soundproof booth podcasters rent by the session. 3 sessions a day per level.',
   },
-  apartment: {
-    name: 'Apartments', icon: '🏢', cost: 300, upkeep: 2, staff: 0, housing: 4,
-    desc: 'Houses 4 staff per level (+1 for each adjacent Park). Buildings without enough staff run slower.',
+  video: {
+    name: 'Video Studio', short: 'Video', icon: '🎥', cost: 3000, upkeep: 40, sessions: 2, price: 90, stars: 2,
+    desc: 'Cameras, lights and a slick set. Big shows pay big money. 2 sessions a day per level. Needs ⭐2.',
   },
-  server: {
-    name: 'Servers', icon: '🖥️', cost: 450, upkeep: 5, staff: 1, capacity: 2500,
-    desc: 'Hosting bandwidth: +2,500 listener capacity per level. Hit the cap and growth stops.',
+  control: {
+    name: 'Control Room', short: 'Control', icon: '🎛️', cost: 800, upkeep: 15, priceBonus: 0.25,
+    desc: 'Pro mixing desk. +25% session price per level for adjacent booths and video studios.',
   },
   editing: {
-    name: 'Editing', icon: '🎚️', cost: 600, upkeep: 4, staff: 1, studioBonus: 0.3,
-    desc: '+30% quality per level to adjacent Studios.',
+    name: 'Editing Suite', short: 'Editing', icon: '🎞️', cost: 1200, upkeep: 20, addon: 6,
+    desc: 'Sells post-production: +$6 per level (× city price) on every session at this studio.',
   },
-  cafe: {
-    name: 'Café', icon: '☕', cost: 250, upkeep: 2, staff: 1, studioBonus: 0.15,
-    desc: '+15% quality per level to adjacent Studios. Caffeinated hosts are better hosts.',
+  lounge: {
+    name: 'Green Room', short: 'Lounge', icon: '🛋️', cost: 600, upkeep: 10, comfort: 2,
+    desc: 'Clients relax before recording. Happier clients build your reputation faster.',
   },
-  ads: {
-    name: 'Ad Sales', icon: '💼', cost: 900, upkeep: 6, staff: 2, adBonus: 0.25,
-    desc: '+25% revenue per listener per level, across your whole network.',
+  coffee: {
+    name: 'Coffee Bar', short: 'Coffee', icon: '☕', cost: 250, upkeep: 5, comfort: 1,
+    desc: 'Cheap comfort: slightly happier clients and slightly faster reputation.',
   },
-  billboard: {
-    name: 'Billboard', icon: '📣', cost: 700, upkeep: 4, staff: 0, marketing: 0.1,
-    desc: '+10% listener growth per level for every Studio.',
-  },
-  park: {
-    name: 'Park', icon: '🌳', cost: 120, upkeep: 0, staff: 0, studioBonus: 0.1,
-    desc: '+10% quality to adjacent Studios and +1 housing to adjacent Apartments. Never needs upgrading.',
-    maxLevel: 1,
+  reception: {
+    name: 'Reception', short: 'Reception', icon: '🛎️', cost: 1000, upkeep: 15, demand: 0.3,
+    desc: '+30% booking requests per level at this studio.',
   },
 };
 
-const MILESTONES = [
-  { listeners: 1000, reward: 500, title: 'Garage Podcaster' },
-  { listeners: 5000, reward: 1500, title: 'Local Favorite' },
-  { listeners: 25000, reward: 5000, title: 'Chart Climber' },
-  { listeners: 100000, reward: 15000, title: 'Top 100 Network' },
-  { listeners: 500000, reward: 50000, title: 'Media Empire' },
-  { listeners: 1000000, reward: 0, title: 'Podcast Mogul 👑' },
+const LOCATIONS = [
+  // priceMult: what clients pay there. costMult: building and upkeep costs there.
+  { id: 'garage', name: 'Garage Studio', city: 'Your hometown', icon: '🏠', price: 0, stars: 1, rent: 10, demand: 4, priceMult: 1, costMult: 1, start: 2 },
+  { id: 'loft', name: 'Downtown Loft', city: 'Downtown', icon: '🏙️', price: 25000, stars: 2, rent: 120, demand: 8, priceMult: 1.4, costMult: 1.5, start: 3 },
+  { id: 'brooklyn', name: 'Brooklyn Warehouse', city: 'New York', icon: '🗽', price: 150000, stars: 3, rent: 400, demand: 12, priceMult: 1.9, costMult: 2.5, start: 3 },
+  { id: 'hollywood', name: 'Hollywood Lot', city: 'Los Angeles', icon: '🎬', price: 1000000, stars: 3.5, rent: 1000, demand: 16, priceMult: 2.5, costMult: 4, start: 3 },
+  { id: 'london', name: 'Soho Studios', city: 'London', icon: '💂', price: 4000000, stars: 4.2, rent: 2200, demand: 20, priceMult: 3.2, costMult: 6, start: 3 },
+  { id: 'tokyo', name: 'Shibuya Tower', city: 'Tokyo', icon: '🗼', price: 12000000, stars: 4.8, rent: 4500, demand: 25, priceMult: 4, costMult: 9, start: 3 },
 ];
+const locById = (id) => LOCATIONS.find((l) => l.id === id);
 
 const EVENTS = [
   {
+    weight: 3, kind: 'good', needs: (s) => countRooms(s, 'video') > 0,
+    run: (s) => { const c = Math.round(800 * topPriceMult(s)); s.cash += c; s.rep += 15; return `🌟 A celebrity booked your video studio for a whole series! +$${fmt(c)} and reputation`; },
+  },
+  {
     weight: 3, kind: 'good',
-    run: (s) => { const gain = Math.round(s.listeners * 0.2) + 200; s.listeners += gain; return `🚀 An episode went viral! +${fmt(gain)} listeners`; },
+    run: (s) => { s.rep += 20; return '🚀 A show recorded at your studio went viral. Everyone wants to book with you! +reputation'; },
   },
   {
-    weight: 2, kind: 'good',
-    run: (s) => { const cash = 300 + Math.round(s.listeners * 0.05); s.cash += cash; return `🤝 A sponsor signed a deal: +$${fmt(cash)}`; },
-  },
-  {
-    weight: 2, kind: 'bad', needsStudio: true,
-    run: (s) => { s.cash -= 200; return '🎤 A microphone broke mid-recording. Repairs cost $200'; },
+    weight: 2, kind: 'good', needs: (s) => countRooms(s, 'booth') >= 3,
+    run: (s) => { const c = Math.round(600 * topPriceMult(s)); s.cash += c; return `📚 A publisher hired your booths to record audiobooks: +$${fmt(c)}`; },
   },
   {
     weight: 2, kind: 'bad',
-    run: (s) => { const loss = Math.round(s.listeners * 0.1); s.listeners -= loss; return `😬 Host drama on social media. −${fmt(loss)} listeners`; },
+    run: (s) => { const c = Math.round(150 * topPriceMult(s)); s.cash -= c; return `🔌 A mixing desk blew a fuse. Repairs cost $${fmt(c)}`; },
   },
   {
-    weight: 1, kind: 'good', needsStudio: true,
-    run: (s) => { s.cash += 1000; return '🏆 Your network won a podcast award! +$1,000 prize'; },
+    weight: 2, kind: 'bad',
+    run: (s) => { s.rep -= 15; return '📢 The neighbors complained about late-night recording noise. −reputation'; },
   },
 ];
 
@@ -104,23 +96,45 @@ const EVENTS = [
 /* State                                                                     */
 /* ------------------------------------------------------------------------- */
 
+const TILE_COUNT = CONFIG.cols * CONFIG.rows;
+
+function startTiles(n) {
+  const out = [];
+  const x0 = Math.floor((CONFIG.cols - n) / 2);
+  for (let y = CONFIG.rows - n; y < CONFIG.rows; y++) {
+    for (let x = x0; x < x0 + n; x++) out.push(y * CONFIG.cols + x);
+  }
+  return out;
+}
+
+function newStudio(loc) {
+  const st = { tiles: Array(TILE_COUNT).fill(null), unlocked: Array(TILE_COUNT).fill(false), expansions: 0 };
+  for (const i of startTiles(loc.start)) st.unlocked[i] = true;
+  return st;
+}
+
 function newGame() {
+  const garage = locById('garage');
+  const studio = newStudio(garage);
+  studio.tiles[startTiles(garage.start)[0]] = { type: 'booth', level: 1 };
   return {
     cash: CONFIG.startCash,
-    listeners: 0,
+    rep: 0,
     day: 1,
-    tiles: Array(CONFIG.cols * CONFIG.rows).fill(null),
-    trending: GENRES[Math.floor(Math.random() * GENRES.length)].id,
-    milestones: 0,
+    studios: { garage: studio },
+    current: 'garage',
     speed: 1,
     seenIntro: false,
+    won: false,
     over: false,
+    totalSessions: 0,
   };
 }
 
 let state = load() || newGame();
-let tool = null;      // building key, 'demolish', or null (inspect)
+let tool = null;      // room key, 'demolish', or null (inspect)
 let selected = -1;    // tile index shown in the inspect sheet
+let lastStats = null;
 
 function save() {
   try { localStorage.setItem(CONFIG.saveKey, JSON.stringify(state)); } catch (_) { /* storage unavailable */ }
@@ -131,7 +145,7 @@ function load() {
     const raw = localStorage.getItem(CONFIG.saveKey);
     if (!raw) return null;
     const s = JSON.parse(raw);
-    if (!Array.isArray(s.tiles) || s.tiles.length !== CONFIG.cols * CONFIG.rows) return null;
+    if (!s.studios || !s.studios.garage) return null;
     return { ...newGame(), ...s };
   } catch (_) {
     return null;
@@ -141,6 +155,17 @@ function load() {
 /* ------------------------------------------------------------------------- */
 /* Simulation                                                                */
 /* ------------------------------------------------------------------------- */
+
+const stars = (s) => Math.min(5, 1 + s.rep / CONFIG.repPerStar);
+const maxLevelOf = () => CONFIG.maxLevel;
+const owned = (s) => LOCATIONS.filter((l) => s.studios[l.id]);
+const topPriceMult = (s) => Math.max(...owned(s).map((l) => l.priceMult));
+
+function countRooms(s, type) {
+  let n = 0;
+  for (const st of Object.values(s.studios)) for (const t of st.tiles) if (t && t.type === type) n++;
+  return n;
+}
 
 function neighbors(i) {
   const { cols, rows } = CONFIG;
@@ -153,62 +178,79 @@ function neighbors(i) {
   return out;
 }
 
-function maxLevelOf(type) {
-  return BUILDINGS[type].maxLevel || CONFIG.maxLevel;
-}
-
-function studioQuality(s, i) {
-  let q = 1;
+function priceBonus(studio, i) {
+  let b = 0;
   for (const n of neighbors(i)) {
-    const t = s.tiles[n];
-    if (t && BUILDINGS[t.type].studioBonus) q += BUILDINGS[t.type].studioBonus * t.level;
+    const t = studio.tiles[n];
+    if (t && ROOMS[t.type].priceBonus) b += ROOMS[t.type].priceBonus * t.level;
   }
-  return q;
+  return b;
 }
 
-function apartmentHousing(s, i) {
-  const t = s.tiles[i];
-  const parks = neighbors(i).filter((n) => s.tiles[n] && s.tiles[n].type === 'park').length;
-  return BUILDINGS.apartment.housing * t.level + parks;
-}
+/** Everything that happens at one studio in one day. */
+function computeStudio(s, loc) {
+  const studio = s.studios[loc.id];
+  const st = stars(s);
+  let upkeep = loc.rent, comfort = 0, demandBonus = 0, addon = 0;
+  const recording = [];
 
-/** Derive every network-wide number from the current map. */
-function computeStats(s) {
-  let housing = 0, demand = 0, upkeep = 0;
-  let capacity = CONFIG.baseCapacity, adMult = 1, marketing = 1;
-  const studios = [];
-
-  s.tiles.forEach((t, i) => {
+  studio.tiles.forEach((t, i) => {
     if (!t) return;
-    const def = BUILDINGS[t.type];
-    upkeep += def.upkeep * t.level;
-    demand += def.staff * t.level;
-    if (def.housing) housing += apartmentHousing(s, i);
-    if (def.capacity) capacity += def.capacity * t.level;
-    if (def.adBonus) adMult += def.adBonus * t.level;
-    if (def.marketing) marketing += def.marketing * t.level;
-    if (t.type === 'studio') studios.push(i);
+    const def = ROOMS[t.type];
+    upkeep += def.upkeep * t.level * loc.costMult;
+    if (def.comfort) comfort += def.comfort * t.level;
+    if (def.demand) demandBonus += def.demand * t.level;
+    if (def.addon) addon += def.addon * t.level * loc.priceMult;
+    if (def.sessions) recording.push(i);
   });
 
-  const efficiency = demand === 0 ? 1 : Math.min(1, housing / demand);
+  const demand = Math.round(loc.demand * (1 + demandBonus) * (0.5 + 0.5 * st));
+  const starPrice = 1 + 0.1 * (st - 1);
 
-  let growth = 0;
-  const perStudio = {};
-  for (const i of studios) {
-    const t = s.tiles[i];
-    const trend = t.genre === s.trending ? CONFIG.trendMultiplier : 1;
-    const g = CONFIG.baseGrowthPerStudio * t.level * studioQuality(s, i) * trend * marketing * efficiency;
-    perStudio[i] = g;
-    growth += g;
+  // Fill the most expensive rooms first.
+  const rooms = recording.map((i) => {
+    const t = studio.tiles[i];
+    const def = ROOMS[t.type];
+    return { i, cap: def.sessions * t.level, price: def.price * loc.priceMult * (1 + priceBonus(studio, i)) * starPrice + addon };
+  }).sort((a, b) => b.price - a.price);
+
+  let left = demand, sessions = 0, revenue = 0, capacity = 0;
+  const perRoom = {};
+  for (const r of rooms) {
+    capacity += r.cap;
+    const n = Math.min(r.cap, left);
+    left -= n;
+    sessions += n;
+    revenue += n * r.price;
+    perRoom[r.i] = { sessions: n, cap: r.cap, price: r.price };
   }
 
-  const revenue = s.listeners * CONFIG.revenuePerListener * adMult;
-  return { housing, demand, upkeep, capacity, adMult, marketing, efficiency, growth, perStudio, revenue, profit: revenue - upkeep };
+  const satisfaction = Math.min(2, 1 + 0.15 * comfort);
+  const turnedAway = Math.max(0, demand - capacity);
+  return { demand, capacity, sessions, turnedAway, revenue, upkeep, satisfaction, perRoom, addon };
+}
+
+function computeAll(s) {
+  const per = {};
+  const total = { demand: 0, sessions: 0, turnedAway: 0, revenue: 0, upkeep: 0, happySessions: 0 };
+  for (const loc of owned(s)) {
+    const r = computeStudio(s, loc);
+    per[loc.id] = r;
+    total.demand += r.demand;
+    total.sessions += r.sessions;
+    total.turnedAway += r.turnedAway;
+    total.revenue += r.revenue;
+    total.upkeep += r.upkeep;
+    total.happySessions += r.sessions * r.satisfaction;
+  }
+  total.profit = total.revenue - total.upkeep;
+  total.repDelta = CONFIG.repGain * Math.sqrt(total.happySessions) / Math.pow(stars(s), CONFIG.repHardness)
+    - CONFIG.repLoss * Math.sqrt(total.turnedAway);
+  return { per, total };
 }
 
 function pickEvent(s) {
-  const hasStudio = s.tiles.some((t) => t && t.type === 'studio');
-  const pool = EVENTS.filter((e) => !e.needsStudio || hasStudio);
+  const pool = EVENTS.filter((e) => !e.needs || e.needs(s));
   let r = Math.random() * pool.reduce((a, e) => a + e.weight, 0);
   for (const e of pool) { r -= e.weight; if (r <= 0) return e; }
   return pool[pool.length - 1];
@@ -218,70 +260,91 @@ function pickEvent(s) {
 function tick() {
   if (state.over) return;
   const s = state;
-  const st = computeStats(s);
+  const before = stars(s);
+  const { per, total } = computeAll(s);
 
-  s.listeners += st.growth - s.listeners * CONFIG.churn;
-  s.listeners = Math.max(0, Math.min(st.capacity, s.listeners));
-  s.cash += st.revenue - st.upkeep;
+  s.cash += total.profit;
+  s.rep = clampRep(s.rep + total.repDelta);
+  s.totalSessions += total.sessions;
   s.day += 1;
 
-  if (s.day % CONFIG.trendEveryDays === 0) {
-    const others = GENRES.filter((g) => g.id !== s.trending);
-    s.trending = others[Math.floor(Math.random() * others.length)].id;
-    const g = genreById(s.trending);
-    toast(`🔥 ${g.icon} ${g.name} is trending! Matching studios grow ${CONFIG.trendMultiplier}× faster.`);
-  }
-
-  if (s.day > 10 && s.listeners > 0 && Math.random() < 1 / 25) {
+  if (s.day > 8 && Math.random() < 1 / 20) {
     const e = pickEvent(s);
     toast(e.run(s), e.kind);
-    s.listeners = Math.max(0, Math.min(st.capacity, s.listeners));
+    s.rep = clampRep(s.rep);
   }
 
-  while (s.milestones < MILESTONES.length && s.listeners >= MILESTONES[s.milestones].listeners) {
-    const m = MILESTONES[s.milestones];
-    s.cash += m.reward;
-    s.milestones += 1;
-    toast(`🎉 Milestone: ${m.title}! ${m.reward ? `+$${fmt(m.reward)} bonus` : ''}`, 'good');
-    if (s.milestones === MILESTONES.length) showWin();
-  }
+  const after = stars(s);
+  if (Math.floor(after) > Math.floor(before)) toast(`⭐ Your studios are now rated ${Math.floor(after)} stars! More bookings and higher prices.`, 'good');
+  if (Math.floor(after) < Math.floor(before)) toast(`⭐ Your rating dropped to ${Math.floor(after)} stars. Turned-away clients hurt your reputation.`, 'bad');
 
   if (s.cash < CONFIG.bankruptAt) {
     s.over = true;
+    setSpeed(0);
     showBankrupt();
   }
 
   if (s.day % 5 === 0) save();
+  showDayFloats(per[s.current]);
   render();
 }
+
+const clampRep = (r) => Math.max(0, Math.min(CONFIG.maxRep, r));
 
 /* ------------------------------------------------------------------------- */
 /* Player actions                                                            */
 /* ------------------------------------------------------------------------- */
 
-function upgradeCost(t) {
-  return Math.round(BUILDINGS[t.type].cost * 1.5 * t.level);
+const studioHere = () => state.studios[state.current];
+const locHere = () => locById(state.current);
+
+/** Building cost of a room at the studio you're looking at. */
+function roomCost(type) {
+  return Math.round(ROOMS[type].cost * locHere().costMult);
 }
 
-function place(i, type) {
-  const def = BUILDINGS[type];
-  if (state.tiles[i]) return;
-  if (state.cash < def.cost) { toast(`Not enough cash for ${def.name} ($${fmt(def.cost)})`, 'bad'); return; }
-  state.cash -= def.cost;
-  const t = { type, level: 1 };
-  if (type === 'studio') t.genre = GENRES[Math.floor(Math.random() * GENRES.length)].id;
-  state.tiles[i] = t;
-  floatText(i, `−$${fmt(def.cost)}`);
-  if (type === 'studio') {
-    const g = genreById(t.genre);
-    toast(`New ${g.icon} ${g.name} show launched! Tap the studio to rebrand it.`);
-  }
+function upgradeCost(t) {
+  return Math.round(roomCost(t.type) * 1.5 * t.level);
+}
+
+function expandCost(locId) {
+  const loc = locById(locId);
+  return Math.round(CONFIG.expandBase * loc.costMult * Math.pow(CONFIG.expandGrowth, state.studios[locId].expansions));
+}
+
+function isBuyable(studio, i) {
+  return !studio.unlocked[i] && neighbors(i).some((n) => studio.unlocked[n]);
+}
+
+function build(i, type) {
+  const def = ROOMS[type];
+  const studio = studioHere();
+  if (studio.tiles[i] || !studio.unlocked[i]) return;
+  if (def.stars && stars(state) < def.stars) { toast(`${def.name} needs a ⭐${def.stars} reputation.`, 'bad'); return; }
+  const cost = roomCost(type);
+  if (state.cash < cost) { toast(`Not enough cash for ${def.name} ($${fmt(cost)})`, 'bad'); return; }
+  state.cash -= cost;
+  studio.tiles[i] = { type, level: 1 };
+  floatText(i, `−$${fmt(cost)}`);
+  save();
+  render(i);
+}
+
+function expand(i) {
+  const studio = studioHere();
+  if (!isBuyable(studio, i)) return;
+  const cost = expandCost(state.current);
+  if (state.cash < cost) return;
+  state.cash -= cost;
+  studio.unlocked[i] = true;
+  studio.expansions += 1;
+  floatText(i, `−$${fmt(cost)}`);
   save();
   render(i);
 }
 
 function upgrade(i) {
-  const t = state.tiles[i];
+  const t = studioHere().tiles[i];
   if (!t || t.level >= maxLevelOf(t.type)) return;
   const cost = upgradeCost(t);
   if (state.cash < cost) return;
@@ -293,23 +356,33 @@ function upgrade(i) {
 }
 
 function demolish(i) {
-  const t = state.tiles[i];
+  const studio = studioHere();
+  const t = studio.tiles[i];
   if (!t) return;
-  const refund = Math.round(BUILDINGS[t.type].cost * CONFIG.demolishRefund);
+  const refund = Math.round(roomCost(t.type) * CONFIG.demolishRefund);
   state.cash += refund;
-  state.tiles[i] = null;
+  studio.tiles[i] = null;
   floatText(i, `+$${fmt(refund)}`);
   save();
   render();
 }
 
-function rebrand(i, genre) {
-  const t = state.tiles[i];
-  if (!t || t.type !== 'studio' || t.genre === genre || state.cash < CONFIG.rebrandCost) return;
-  state.cash -= CONFIG.rebrandCost;
-  t.genre = genre;
+function buyLocation(id) {
+  const loc = locById(id);
+  if (state.studios[id] || state.cash < loc.price || stars(state) < loc.stars) return;
+  state.cash -= loc.price;
+  state.studios[id] = newStudio(loc);
+  state.current = id;
+  tool = null;
+  toast(`${loc.icon} You opened ${loc.name} in ${loc.city}! Build some booths to start taking bookings.`, 'good');
+  if (owned(state).length === LOCATIONS.length && !state.won) {
+    state.won = true;
+    save();
+    showWin();
+    return;
+  }
   save();
-  render();
+  closeSheet();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -319,6 +392,7 @@ function rebrand(i, genre) {
 const $ = (id) => document.getElementById(id);
 const boardEl = $('board');
 const toolbarEl = $('toolbar');
+const tabsEl = $('locations');
 const sheetEl = $('sheet');
 const backdropEl = $('sheet-backdrop');
 
@@ -331,10 +405,9 @@ function fmt(n) {
 
 function buildBoard() {
   boardEl.innerHTML = '';
-  for (let i = 0; i < CONFIG.cols * CONFIG.rows; i++) {
+  for (let i = 0; i < TILE_COUNT; i++) {
     const b = document.createElement('button');
     b.className = 'tile';
-    b.dataset.i = i;
     b.addEventListener('click', () => onTile(i));
     boardEl.appendChild(b);
   }
@@ -342,15 +415,19 @@ function buildBoard() {
 
 function buildToolbar() {
   toolbarEl.innerHTML = '';
-  const entries = Object.entries(BUILDINGS).map(([k, d]) => ({ key: k, icon: d.icon, name: d.name, cost: d.cost }));
+  const entries = Object.entries(ROOMS).map(([k, d]) => ({ key: k, icon: d.icon, name: d.short, cost: d.cost }));
   entries.push({ key: 'demolish', icon: '🚧', name: 'Demolish', cost: null });
   for (const e of entries) {
     const b = document.createElement('button');
     b.className = 'tool';
     b.dataset.tool = e.key;
-    b.innerHTML = `<span class="ico">${e.icon}</span><span class="nm">${e.name}</span>` +
-      `<span class="cost">${e.cost == null ? '50% back' : '$' + fmt(e.cost)}</span>`;
+    b.innerHTML = `<span class="ico">${e.icon}</span><span class="nm">${e.name}</span><span class="cost"></span>`;
     b.addEventListener('click', () => {
+      const def = ROOMS[e.key];
+      if (def && def.stars && stars(state) < def.stars) {
+        toast(`${def.name} unlocks at ⭐${def.stars}. Serve more clients to raise your rating.`);
+        return;
+      }
       tool = tool === e.key ? null : e.key;
       render();
     });
@@ -358,75 +435,114 @@ function buildToolbar() {
   }
 }
 
+function buildTabs() {
+  tabsEl.innerHTML = '';
+  for (const loc of LOCATIONS) {
+    const b = document.createElement('button');
+    b.className = 'loc';
+    b.dataset.loc = loc.id;
+    b.addEventListener('click', () => onLocation(loc.id));
+    tabsEl.appendChild(b);
+  }
+}
+
 function render(popIndex = -1) {
   const s = state;
-  const st = computeStats(s);
+  const all = computeAll(s);
+  lastStats = all;
+  const here = all.per[s.current];
+  const studio = studioHere();
+  const st = stars(s);
 
   // HUD
   $('cash').textContent = '$' + fmt(s.cash);
   $('cash').classList.toggle('neg', s.cash < 0);
   const p = $('profit');
-  p.textContent = `${st.profit >= 0 ? '+' : ''}${fmt(st.profit)}/day`;
-  p.className = st.profit >= 0 ? 'pos' : 'neg';
-  $('listeners').textContent = fmt(s.listeners);
-  $('capacity').textContent = '/ ' + fmt(st.capacity);
-  $('stat-listeners').classList.toggle('warn', s.listeners >= st.capacity * 0.98 && st.growth > 0);
-  $('staff').textContent = `${st.housing}/${st.demand}`;
-  $('stat-staff').classList.toggle('warn', st.efficiency < 1);
+  p.textContent = `${all.total.profit >= 0 ? '+' : ''}${fmt(all.total.profit)}/day`;
+  p.className = all.total.profit >= 0 ? 'pos' : 'neg';
+  $('stars').textContent = st.toFixed(1);
+  $('stars-fill').style.width = `${((st - 1) / 4) * 100}%`;
+  $('bookings').textContent = `${fmt(all.total.sessions)}/${fmt(all.total.demand)}`;
+  $('stat-bookings').classList.toggle('warn', all.total.turnedAway > 0);
   $('day').textContent = s.day;
-  const g = genreById(s.trending);
-  $('trending').textContent = `${g.icon} ${g.name}`;
+  $('owned').textContent = `${owned(s).length}/${LOCATIONS.length}`;
   document.querySelectorAll('.speed button').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === s.speed));
 
-  const next = MILESTONES[s.milestones];
+  const next = LOCATIONS.find((l) => !s.studios[l.id]);
   $('goal').innerHTML = next
-    ? `Goal: <b>${fmt(next.listeners)}</b> listeners → ${next.title}`
-    : '<b>👑 Podcast Mogul!</b> Keep growing.';
+    ? `Next: ${next.icon} <b>$${fmt(next.price)}</b> + ⭐${next.stars}`
+    : '<b>👑 Studio Empire!</b>';
+
+  // Location tabs
+  tabsEl.querySelectorAll('.loc').forEach((b) => {
+    const loc = locById(b.dataset.loc);
+    const has = !!s.studios[loc.id];
+    const affordable = !has && s.cash >= loc.price && st >= loc.stars;
+    b.className = `loc${loc.id === s.current ? ' active' : ''}${has ? '' : ' locked'}${affordable ? ' ready' : ''}`;
+    b.innerHTML = has ? `${loc.icon} ${loc.name}` : `🔒 ${loc.icon} $${fmt(loc.price)}`;
+  });
 
   // Board
-  boardEl.querySelectorAll('.tile').forEach((el, i) => {
-    const t = s.tiles[i];
+  const loc = locHere();
+  const expandPrice = expandCost(s.current);
+  boardEl.children.length && Array.from(boardEl.children).forEach((el, i) => {
+    const t = studio.tiles[i];
     el.className = 'tile';
-    if (t) {
-      const def = BUILDINGS[t.type];
-      el.classList.add('built', t.type);
-      const stars = maxLevelOf(t.type) > 1 ? '★'.repeat(t.level) : '';
-      let badge = '';
-      if (t.type === 'studio') {
-        badge = `<span class="badge">${genreById(t.genre).icon}</span>`;
-        if (t.genre === s.trending) el.classList.add('trending');
+    el.innerHTML = '';
+    if (!studio.unlocked[i]) {
+      el.classList.add('locked');
+      if (isBuyable(studio, i)) {
+        el.classList.add('buyable');
+        el.innerHTML = `<span class="plus">＋</span><span class="price">$${fmt(expandPrice)}</span>`;
+        el.setAttribute('aria-label', `Expand here for $${expandPrice}`);
+      } else {
+        el.setAttribute('aria-label', 'Neighboring property');
       }
-      if (def.staff && st.efficiency < 0.5) el.classList.add('idle');
-      el.innerHTML = `${def.icon}${badge}<span class="lvl">${stars}</span>`;
+    } else if (t) {
+      const def = ROOMS[t.type];
+      el.classList.add('built', t.type);
+      const room = here.perRoom[i];
+      const onAir = room && room.sessions > 0;
+      if (def.sessions && onAir) el.classList.add('onair');
+      if (def.sessions && !onAir) el.classList.add('idle');
+      el.innerHTML = `${def.icon}${onAir ? '<span class="badge">🔴</span>' : ''}<span class="lvl">${'★'.repeat(t.level)}</span>`;
       el.setAttribute('aria-label', `${def.name} level ${t.level}`);
     } else {
-      el.innerHTML = '';
-      el.setAttribute('aria-label', 'Empty lot');
+      el.classList.add('floor');
+      el.setAttribute('aria-label', 'Empty floor space');
     }
-    if (tool && tool !== 'demolish') el.classList.add('can-place');
-    if (tool === 'demolish') el.classList.add('can-demolish');
+    if (tool && tool !== 'demolish' && studio.unlocked[i] && !t) el.classList.add('can-place');
+    if (tool === 'demolish' && t) el.classList.add('can-demolish');
     if (i === selected) el.classList.add('selected');
     if (i === popIndex) el.classList.add('pop');
   });
+  $('studio-name').textContent = `${loc.icon} ${loc.name}`;
+  $('studio-stats').textContent = `📋 ${here.sessions}/${here.demand} booked · 💵 $${fmt(here.revenue - here.upkeep)}/day`;
 
   // Toolbar
   toolbarEl.querySelectorAll('.tool').forEach((b) => {
     const k = b.dataset.tool;
+    const def = ROOMS[k];
     b.classList.toggle('active', k === tool);
-    b.classList.toggle('unaffordable', BUILDINGS[k] ? s.cash < BUILDINGS[k].cost : false);
+    const locked = def && def.stars && st < def.stars;
+    b.classList.toggle('locked', !!locked);
+    b.classList.toggle('unaffordable', !!def && !locked && s.cash < roomCost(k));
+    b.querySelector('.cost').textContent = !def ? '50% back' : locked ? `🔒 ⭐${def.stars}` : `$${fmt(roomCost(k))}`;
   });
 
   // Hint
   let hint;
-  if (tool === 'demolish') hint = 'Tap a building to demolish it (50% refund).';
-  else if (tool) hint = `Tap an empty lot to build a ${BUILDINGS[tool].name}. ${BUILDINGS[tool].desc}`;
-  else if (!s.tiles.some(Boolean)) hint = 'Pick a building below, then tap the map. Start with a 🎙️ Studio and 🏢 Apartments!';
-  else if (st.efficiency < 1) hint = `⚠️ Short on staff: buildings run at ${Math.round(st.efficiency * 100)}%. Build Apartments.`;
-  else if (s.listeners >= st.capacity * 0.98 && st.growth > 0) hint = '⚠️ Servers are full! Build 🖥️ Servers to grow further.';
-  else hint = 'Tap a building to inspect or upgrade it.';
+  const free = studio.tiles.some((t, i) => !t && studio.unlocked[i]);
+  if (tool === 'demolish') hint = 'Tap a room to demolish it (50% refund).';
+  else if (tool) hint = `Tap empty floor to build: ${ROOMS[tool].desc}`;
+  else if (here.capacity === 0) hint = 'No rooms yet! Pick 🎙️ Booth below, then tap the floor.';
+  else if (here.turnedAway > 0 && !free) hint = `⚠️ Turning away ${here.turnedAway} client${here.turnedAway === 1 ? "" : "s"}/day and no floor left. Tap a ＋ tile to expand.`;
+  else if (here.turnedAway > 0) hint = `⚠️ Turning away ${here.turnedAway} client${here.turnedAway === 1 ? "" : "s"}/day! Build more booths.`;
+  else if (here.capacity > here.sessions * 1.5 && here.capacity - here.sessions >= 3) hint = 'Rooms sitting empty. A 🛎️ Reception brings more bookings.';
+  else hint = 'Tap a room to inspect or upgrade it.';
   $('hint').textContent = hint;
 
-  if (!sheetEl.classList.contains('hidden') && selected >= 0) renderInspect(selected, st);
+  if (!sheetEl.classList.contains('hidden') && selected >= 0) renderInspect(selected, here);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -435,18 +551,28 @@ function render(popIndex = -1) {
 
 function onTile(i) {
   if (state.over) return;
-  const t = state.tiles[i];
-  if (tool === 'demolish') {
-    if (t) demolish(i);
+  const studio = studioHere();
+  const t = studio.tiles[i];
+  if (!studio.unlocked[i]) {
+    if (isBuyable(studio, i)) showExpand(i);
+    else toast('Expand next to your existing floor space first.');
     return;
   }
-  if (tool) {
-    if (t) { openInspect(i); return; }
-    place(i, tool);
-    return;
+  if (tool === 'demolish') { if (t) demolish(i); return; }
+  if (t) { openInspect(i); return; }
+  if (tool) { build(i, tool); return; }
+  toast('Pick a room to build from the menu below 👇');
+}
+
+function onLocation(id) {
+  if (state.studios[id]) {
+    state.current = id;
+    tool = null;
+    save();
+    render();
+  } else {
+    showLocation(id);
   }
-  if (t) openInspect(i);
-  else toast('Pick something to build from the menu below 👇');
 }
 
 function openSheet(html) {
@@ -469,40 +595,31 @@ function openInspect(i) {
   render();
 }
 
-function renderInspect(i, st) {
-  const t = state.tiles[i];
+function renderInspect(i, here) {
+  const t = studioHere().tiles[i];
   if (!t) { closeSheet(); return; }
-  const def = BUILDINGS[t.type];
-  const rows = [['Level', `${t.level} / ${maxLevelOf(t.type)}`], ['Upkeep', `$${fmt(def.upkeep * t.level)}/day`]];
-  if (def.staff) rows.push(['Staff needed', def.staff * t.level]);
-  if (t.type === 'studio') {
-    const g = genreById(t.genre);
-    rows.push(['Genre', `${g.icon} ${g.name}${t.genre === state.trending ? ' 🔥' : ''}`]);
-    rows.push(['Quality', `${Math.round(studioQuality(state, i) * 100)}%`]);
-    rows.push(['New listeners', `+${fmt(st.perStudio[i] || 0)}/day`]);
+  const def = ROOMS[t.type];
+  const loc = locHere();
+  const rows = [['Level', `${t.level} / ${maxLevelOf(t.type)}`], ['Upkeep', `$${fmt(def.upkeep * t.level * loc.costMult)}/day`]];
+  const room = here.perRoom[i];
+  if (room) {
+    rows.push(['Booked today', `${room.sessions} / ${room.cap} sessions`]);
+    rows.push(['Price per session', `$${fmt(room.price)}`]);
+    rows.push(['Earning', `$${fmt(room.sessions * room.price)}/day`]);
   }
-  if (t.type === 'apartment') rows.push(['Houses', `${apartmentHousing(state, i)} staff`]);
-  if (def.capacity) rows.push(['Capacity', `+${fmt(def.capacity * t.level)} listeners`]);
-  if (def.adBonus) rows.push(['Ad revenue', `+${Math.round(def.adBonus * t.level * 100)}%`]);
-  if (def.marketing) rows.push(['Growth boost', `+${Math.round(def.marketing * t.level * 100)}%`]);
-  if (def.studioBonus) rows.push(['Studio bonus', `+${Math.round(def.studioBonus * t.level * 100)}% to neighbors`]);
+  if (def.priceBonus) rows.push(['Price boost', `+${Math.round(def.priceBonus * t.level * 100)}% to neighbors`]);
+  if (def.addon) rows.push(['Post-production', `+$${fmt(def.addon * t.level * loc.priceMult)}/session`]);
+  if (def.comfort) rows.push(['Client happiness', `+${Math.round(0.15 * def.comfort * t.level * 100)}%`]);
+  if (def.demand) rows.push(['Extra bookings', `+${Math.round(def.demand * t.level * 100)}%`]);
 
   const canUp = t.level < maxLevelOf(t.type);
   const upCost = canUp ? upgradeCost(t) : 0;
-  const refund = Math.round(def.cost * CONFIG.demolishRefund);
-
-  let genres = '';
-  if (t.type === 'studio') {
-    genres = `<p>Rebrand show ($${CONFIG.rebrandCost}):</p><div class="genres">` +
-      GENRES.map((g) => `<button class="btn${g.id === t.genre ? ' current' : ''}" data-genre="${g.id}" ${g.id === t.genre || state.cash < CONFIG.rebrandCost ? 'disabled' : ''}>${g.icon} ${g.name}</button>`).join('') +
-      '</div>';
-  }
+  const refund = Math.round(roomCost(t.type) * CONFIG.demolishRefund);
 
   sheetEl.innerHTML = `
     <h2>${def.icon} ${def.name}</h2>
     <p>${def.desc}</p>
     <div class="rows">${rows.map(([a, b]) => `<span>${a}</span><span>${b}</span>`).join('')}</div>
-    ${genres}
     <div class="btns">
       ${canUp ? `<button class="btn primary" data-act="upgrade" ${state.cash < upCost ? 'disabled' : ''}>⬆ Upgrade $${fmt(upCost)}</button>` : ''}
       <button class="btn danger" data-act="demolish">🚧 Demolish +$${fmt(refund)}</button>
@@ -510,69 +627,113 @@ function renderInspect(i, st) {
     </div>`;
 }
 
+function showExpand(i) {
+  selected = -1;
+  const cost = expandCost(state.current);
+  openSheet(`
+    <h2>🧱 Expand your studio</h2>
+    <p>Knock through the wall and lease this space for <b>$${fmt(cost)}</b>. Each expansion at this studio costs a bit more than the last.</p>
+    <div class="btns">
+      <button class="btn primary" data-act="expand" data-i="${i}" ${state.cash < cost ? 'disabled' : ''}>Expand $${fmt(cost)}</button>
+      <button class="btn" data-act="close">Cancel</button>
+    </div>`);
+}
+
+function showLocation(id) {
+  selected = -1;
+  const loc = locById(id);
+  const st = stars(state);
+  const okStars = st >= loc.stars, okCash = state.cash >= loc.price;
+  openSheet(`
+    <h2>${loc.icon} ${loc.name}</h2>
+    <p>Open a new studio in <b>${loc.city}</b>.</p>
+    <div class="rows">
+      <span>Price</span><span class="${okCash ? 'ok' : 'no'}">$${fmt(loc.price)}</span>
+      <span>Rating needed</span><span class="${okStars ? 'ok' : 'no'}">⭐${loc.stars} (you: ${st.toFixed(1)})</span>
+      <span>Rent</span><span>$${fmt(loc.rent)}/day</span>
+      <span>Client demand</span><span>${loc.demand} bookings/day base</span>
+      <span>Session prices</span><span>×${loc.priceMult}</span>
+      <span>Building costs</span><span>×${loc.costMult}</span>
+      <span>Starting space</span><span>${loc.start}×${loc.start}</span>
+    </div>
+    <div class="btns">
+      <button class="btn primary" data-act="buyloc" data-loc="${id}" ${okStars && okCash ? '' : 'disabled'}>Open studio</button>
+      <button class="btn" data-act="close">Not yet</button>
+    </div>`);
+}
+
 sheetEl.addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn || btn.disabled) return;
-  const i = selected;
-  if (btn.dataset.genre) rebrand(i, btn.dataset.genre);
-  else if (btn.dataset.act === 'upgrade') upgrade(i);
-  else if (btn.dataset.act === 'demolish') { demolish(i); closeSheet(); }
-  else if (btn.dataset.act === 'close') closeSheet();
-  else if (btn.dataset.act === 'restart') restart();
-  else if (btn.dataset.act === 'dismiss') { state.seenIntro = true; save(); closeSheet(); }
+  const act = btn.dataset.act;
+  if (act === 'upgrade') upgrade(selected);
+  else if (act === 'demolish') { demolish(selected); closeSheet(); }
+  else if (act === 'expand') { expand(Number(btn.dataset.i)); closeSheet(); }
+  else if (act === 'buyloc') buyLocation(btn.dataset.loc);
+  else if (act === 'close') closeSheet();
+  else if (act === 'restart') restart();
+  else if (act === 'help') showIntro();
+  else if (act === 'dismiss') dismissIntro();
 });
 backdropEl.addEventListener('click', () => {
   if (state.over) return;
-  if (!state.seenIntro) { state.seenIntro = true; save(); }
+  if (!state.seenIntro) { dismissIntro(); return; }
   closeSheet();
 });
 
-document.querySelectorAll('.speed button').forEach((b) => {
-  b.addEventListener('click', () => { setSpeed(Number(b.dataset.speed)); });
-});
+/** The clock stays paused until the player has read the welcome screen. */
+function dismissIntro() {
+  const first = !state.seenIntro;
+  state.seenIntro = true;
+  save();
+  closeSheet();
+  if (first) setSpeed(1);
+}
 
+document.querySelectorAll('.speed button').forEach((b) => {
+  b.addEventListener('click', () => { if (!state.over) setSpeed(Number(b.dataset.speed)); });
+});
 $('menu-btn').addEventListener('click', showMenu);
 
 function showMenu() {
   selected = -1;
-  const ms = MILESTONES.map((m, idx) =>
-    `<li class="${idx < state.milestones ? 'done' : ''}">${idx < state.milestones ? '✅' : '⬜'} ${fmt(m.listeners)} listeners: ${m.title}${m.reward ? ` (+$${fmt(m.reward)})` : ''}</li>`).join('');
+  const list = LOCATIONS.map((l) => `<li class="${state.studios[l.id] ? 'done' : ''}">${state.studios[l.id] ? '✅' : '⬜'} ${l.icon} ${l.name}, ${l.city} ($${fmt(l.price)}, ⭐${l.stars})</li>`).join('');
   openSheet(`
-    <h2>🎧 Podcast Tycoon</h2>
-    <p>Day ${state.day}. Milestones:</p>
-    <ul class="milestones">${ms}</ul>
+    <h2>🎙️ Your Studio Empire</h2>
+    <p>Day ${state.day} · ${fmt(state.totalSessions)} sessions recorded so far.</p>
+    <ul class="checklist">${list}</ul>
     <div class="btns">
       <button class="btn" data-act="help">❓ How to play</button>
       <button class="btn danger" data-act="restart">🔄 New game</button>
       <button class="btn" data-act="close">Close</button>
     </div>`);
-  sheetEl.querySelector('[data-act="help"]').addEventListener('click', showIntro);
 }
 
 function showIntro() {
   selected = -1;
   openSheet(`
-    <h2>🎙️ Podcast Tycoon</h2>
-    <p>Build a podcast empire! Grow your network to <b>1 million listeners</b> to become a Podcast Mogul.</p>
+    <h2>🎙️ Podcast Studio Tycoon</h2>
+    <p>You've got one booth in a garage. Podcasters pay to record in your rooms. Turn it into a <b>studio empire</b> with locations around the world.</p>
     <ul>
-      <li>🎙️ <b>Studios</b> make shows that attract listeners.</li>
-      <li>🏢 <b>Apartments</b> house the staff your buildings need.</li>
-      <li>🖥️ <b>Servers</b> raise your listener cap.</li>
-      <li>🎚️☕🌳 Put <b>Editing, Cafés and Parks next to Studios</b> to boost quality.</li>
-      <li>💼 <b>Ad Sales</b> and 📣 <b>Billboards</b> boost your whole network.</li>
-      <li>🔥 Shows in the <b>trending genre</b> grow 2× faster. Trends change every 30 days.</li>
-      <li>Tap a building to <b>upgrade</b> it. Don't let cash fall below −$1,000!</li>
+      <li>🎙️ <b>Booths</b> and 🎥 <b>Video Studios</b> are rented by the session. More rooms means more bookings.</li>
+      <li>🎛️ <b>Control Rooms</b> raise the price of rooms <b>next to them</b>, so layout matters.</li>
+      <li>🛋️☕ <b>Comfort</b> keeps clients happy and builds your ⭐ rating faster.</li>
+      <li>🛎️ <b>Reception</b> brings more clients. 🎞️ <b>Editing</b> adds post-production money to every session.</li>
+      <li>⭐ A higher rating brings more clients and higher prices. Turning clients away hurts it.</li>
+      <li>🧱 Tap a <b>＋</b> tile to expand your floor space.</li>
+      <li>🌍 Open studios in new cities from the tabs above the map. Own all ${LOCATIONS.length} to win.</li>
+      <li>Rent and upkeep are paid daily. Don't let cash drop below −$1,000!</li>
     </ul>
-    <div class="btns"><button class="btn primary" data-act="dismiss">Let's go!</button></div>`);
+    <div class="btns"><button class="btn primary" data-act="dismiss">Open the doors!</button></div>`);
 }
 
 function showWin() {
   setSpeed(0);
   openSheet(`
-    <h2>👑 Podcast Mogul!</h2>
-    <p>You reached 1,000,000 listeners on day ${state.day}. Your network is the biggest in the city!</p>
+    <h2>👑 Studio Empire!</h2>
+    <p>On day ${state.day} you own podcast studios in every city, from a garage to Tokyo. ${fmt(state.totalSessions)} sessions recorded!</p>
     <div class="btns">
-      <button class="btn primary" data-act="close">Keep playing</button>
+      <button class="btn primary" data-act="close">Keep building</button>
       <button class="btn" data-act="restart">New game</button>
     </div>`);
 }
@@ -580,8 +741,8 @@ function showWin() {
 function showBankrupt() {
   openSheet(`
     <h2>💸 Bankrupt!</h2>
-    <p>Your cash fell below −$${fmt(-CONFIG.bankruptAt)} on day ${state.day}. The bank shut your network down.</p>
-    <p>Tip: keep an eye on the profit per day under your cash, and don't build more than your listeners can pay for.</p>
+    <p>Your cash fell below −$${fmt(-CONFIG.bankruptAt)} on day ${state.day}, and the landlord changed the locks.</p>
+    <p>Tip: watch the profit per day under your cash. Rooms with no bookings still cost upkeep, and new cities charge high rent.</p>
     <div class="btns"><button class="btn primary" data-act="restart">Try again</button></div>`);
 }
 
@@ -622,6 +783,16 @@ function floatText(i, text) {
   setTimeout(() => el.remove(), 1000);
 }
 
+/** Show a couple of "+$" pops over busy rooms so the studio feels alive. */
+function showDayFloats(here) {
+  if (!here || !sheetEl.classList.contains('hidden') || state.speed > 1) return;
+  const busy = Object.entries(here.perRoom).filter(([, r]) => r.sessions > 0);
+  for (let k = 0; k < Math.min(2, busy.length); k++) {
+    const [i, r] = busy[Math.floor(Math.random() * busy.length)];
+    floatText(Number(i), `+$${fmt(r.sessions * r.price)}`);
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Game loop                                                                 */
 /* ------------------------------------------------------------------------- */
@@ -642,6 +813,7 @@ document.addEventListener('visibilitychange', () => {
 
 buildBoard();
 buildToolbar();
-setSpeed(state.over ? 0 : state.speed);
+buildTabs();
+setSpeed(state.over || state.won || !state.seenIntro ? 0 : state.speed);
 if (!state.seenIntro) showIntro();
 if (state.over) showBankrupt();

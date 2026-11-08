@@ -6,22 +6,24 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Podcast Tycoon">
+  <meta name="apple-mobile-web-app-title" content="Studio Tycoon">
   <meta name="theme-color" content="#1b1430">
-  <title>Podcast Tycoon</title>
+  <title>Podcast Studio Tycoon</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="app">
     <header id="hud">
       <div class="hud-row">
-        <div class="stat" id="stat-cash" title="Cash">💰 <span id="cash">$0</span><small id="profit"></small></div>
-        <div class="stat" id="stat-listeners" title="Listeners / capacity">🎧 <span id="listeners">0</span><small id="capacity"></small></div>
+        <div class="stat" title="Cash">💰 <span id="cash">$0</span><small id="profit"></small></div>
+        <div class="stat rating" title="Reputation">⭐ <span id="stars">1.0</span>
+          <div class="bar"><div id="stars-fill"></div></div>
+        </div>
       </div>
       <div class="hud-row">
-        <div class="stat" id="stat-staff" title="Staff housed / needed">👥 <span id="staff">0/0</span></div>
+        <div class="stat" id="stat-bookings" title="Sessions booked / client requests today">📋 <span id="bookings">0/0</span></div>
         <div class="stat" title="Day">📅 <span id="day">1</span></div>
-        <div class="stat trend" title="Trending genre">🔥 <span id="trending"></span></div>
+        <div class="stat" title="Studios owned">🏢 <span id="owned">1/6</span></div>
       </div>
       <div class="hud-row controls">
         <div class="speed" role="group" aria-label="Game speed">
@@ -34,8 +36,14 @@
       </div>
     </header>
 
+    <nav id="locations" aria-label="Your studios"></nav>
+
     <main id="board-wrap">
-      <div id="board" aria-label="City map"></div>
+      <div class="studio-head">
+        <div id="studio-name"></div>
+        <div id="studio-stats"></div>
+      </div>
+      <div id="board" aria-label="Studio floor plan"></div>
     </main>
 
     <div id="hint" class="hint"></div>
